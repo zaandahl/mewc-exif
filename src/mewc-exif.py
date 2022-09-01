@@ -19,6 +19,7 @@ def print_exif(exif_dict):
         print(f'photo-focal-length (2nd class): {exif_dict["Exif"][37386]}')
 
 config = read_yaml('config.yaml')
+config['DEBUG'] = 0
 for conf_key in config.keys():
     if conf_key in os.environ:
         config[conf_key] = os.environ[conf_key]
