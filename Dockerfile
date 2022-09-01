@@ -1,5 +1,5 @@
 # set base image (host OS)
-FROM zaandahl/mewc-torch:latest
+FROM zaandahl/megadetector:latest
 
 # set the working directory in the container
 WORKDIR /code
