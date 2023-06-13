@@ -2,6 +2,7 @@ import os
 import json
 import pandas as pd
 import piexif
+from datetime import datetime
 from tqdm import tqdm
 from pathlib import Path
 from lib_common import read_yaml
@@ -57,8 +58,9 @@ for json_image in tqdm(json_data['images']):
             try:
                 en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = str(exif_dict["Exif"][36867].decode('UTF-8'))
             except:
-                # get date time from file modified info
-                en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = str(pd.to_datetime(os.path.getmtime(input_path), unit='s'))
+                modified_time = os.path.getmtime(input_path)
+                date_time_str = datetime.fromtimestamp(modified_time).strftime('%Y:%m:%d %H:%M:%S')
+                en_out.loc[en_out['filename'].str.startswith(str(image_stem)), 'date_time_orig'] = date_time_str
             for idx in range(len(json_image['detections'])):
                 en_out.loc[en_out['filename'].str.startswith(str(image_stem) + '-' + str(idx)), 'conf'] = json_image['detections'][idx]['conf']
         except Exception as e:
