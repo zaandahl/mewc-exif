@@ -57,7 +57,8 @@ for json_image in tqdm(json_data['images']):
             try:
                 en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = str(exif_dict["Exif"][36867].decode('UTF-8'))
             except:
-                en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = None
+                # get date time from file modified info
+                en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = str(pd.to_datetime(os.path.getmtime(input_path), unit='s'))
             for idx in range(len(json_image['detections'])):
                 en_out.loc[en_out['filename'].str.startswith(str(image_stem) + '-' + str(idx)), 'conf'] = json_image['detections'][idx]['conf']
         except Exception as e:
