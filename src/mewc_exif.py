@@ -50,8 +50,14 @@ for json_image in tqdm(json_data['images']):
         try:
             input_path = next(Path(config['INPUT_DIR']).rglob(image_name))
             img = Image.open(input_path)
-            exif_dict = piexif.load(img.info["exif"])
-            en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = str(exif_dict["Exif"][36867].decode('UTF-8'))
+            try:
+                exif_dict = piexif.load(img.info["exif"])
+            except:
+                exif_dict = {'Exif': {}}
+            try:
+                en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = str(exif_dict["Exif"][36867].decode('UTF-8'))
+            except:
+                en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = None
             for idx in range(len(json_image['detections'])):
                 en_out.loc[en_out['filename'].str.startswith(str(image_stem) + '-' + str(idx)), 'conf'] = json_image['detections'][idx]['conf']
         except Exception as e:
@@ -81,7 +87,10 @@ for json_image in tqdm(json_data['images']):
             detections = sum(valid_image)
             en_out.loc[en_out.filename == image_name, 'detections'] = detections # just housekeeping with the df
             img = Image.open(input_path)
-            exif_dict = piexif.load(img.info["exif"])
+            try:
+                exif_dict = piexif.load(img.info["exif"])
+            except:
+                exif_dict = {'Exif': {}}
             if(41988 in exif_dict["Exif"] and type(exif_dict["Exif"][41988]) is int):
                 exif_dict["Exif"][41988] = (exif_dict["Exif"][41988], 1) # hack to fix Bushnell data - this value needs to be a tuple
             if(int(config['DEBUG']) > 0):
