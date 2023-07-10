@@ -8,6 +8,17 @@ from pathlib import Path
 from lib_common import read_yaml
 from lib_tools import process_detections,contains_animal
 from PIL import Image
+from iptcinfo3 import IPTCInfo
+
+def get_keywords(file_path):
+    try:
+        info = IPTCInfo(file_path, force=True)
+    except Exception as e:
+        print("exception: " + str(e))
+        info = None
+    # for k, v in info._data.items():
+    #     if k == 25: print(k, v)
+    return info
 
 def print_exif(exif_dict):
     if 33437 in exif_dict["Exif"]:
@@ -94,6 +105,11 @@ for json_image in tqdm(json_data['images']):
                 exif_dict = piexif.load(img.info["exif"])
             except:
                 exif_dict = {'Exif': {}}
+            try:
+                iptc_keywords = get_keywords(input_path)
+                # print("iptc keywords:" + iptc_keywords)
+            except:
+                iptc_keywords = None
             if(41988 in exif_dict["Exif"] and type(exif_dict["Exif"][41988]) is int):
                 exif_dict["Exif"][41988] = (exif_dict["Exif"][41988], 1) # hack to fix Bushnell data - this value needs to be a tuple
             if(int(config['DEBUG']) > 0):
@@ -138,6 +154,11 @@ for json_image in tqdm(json_data['images']):
                 print_exif(exif_dict)
             exif_bytes = piexif.dump(exif_dict)
             img.save(input_path, exif=exif_bytes)
+            if iptc_keywords is not None:
+                iptc_keywords.save_as(str(input_path))
+                # remove temp file with ~ at end
+                if(Path(str(input_path) + "~").is_file()):
+                    Path(str(input_path) + "~").unlink()
         except Exception as e:
             print(e)
             print("ERROR: failed to process " + image_name)
