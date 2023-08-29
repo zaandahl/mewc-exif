@@ -1,4 +1,5 @@
 import os
+import logging
 import json
 import pandas as pd
 import piexif
@@ -10,9 +11,11 @@ from lib_tools import process_detections,contains_animal
 from PIL import Image
 from iptcinfo3 import IPTCInfo
 
+logging.getLogger('iptcinfo').setLevel(logging.ERROR)
+
 def get_keywords(file_path):
     try:
-        info = IPTCInfo(file_path, force=True)
+        info = IPTCInfo(file_path)
     except Exception as e:
         print("exception: " + str(e))
         info = None
