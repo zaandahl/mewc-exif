@@ -124,10 +124,15 @@ for json_image in tqdm(json_data['images']):
                     print(key, value)
             # set the f_number 33437
             exif_dict["Exif"][33437] = (int(detections), 1)
-            group_1 = en_out.loc[(en_out['filename'].str.startswith(str(image_stem))) & (en_out.class_rank == 1.0)]
+            group_1 = en_out.loc[(en_out['filename'].str.contains(str(image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 1.0)]
             group_1 = group_1.reset_index()
-            group_2 = en_out.loc[(en_out['filename'].str.startswith(str(image_stem))) & (en_out.class_rank == 2.0)]
+            group_2 = en_out.loc[(en_out['filename'].str.contains(str(image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 2.0)]
             group_2 = group_2.reset_index()
+            if(int(config['DEBUG']) > 0):
+                print("group_1")
+                print(group_1)
+                print("group_2")
+                print(group_2)
             if(len(group_1) > 0):
                 class_1 = group_1.loc[group_1['conf'].idxmax(), 'class_id']
                 prob_1 = group_1.loc[group_1['conf'].idxmax(), 'prob']
