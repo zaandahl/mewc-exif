@@ -15,7 +15,7 @@ VARIABLE=VALUE
 After installing Docker you can run the container using a command similar to the following. Substitute `"$IN_DIR"` for your image directory and create a text file `"$ENV_FILE"` with any config options you wish to override. 
 
 ```
-docker pull zaandahl/mewc-exif:v1.0
+docker pull zaandahl/mewc-exif
 docker run --env-file "$ENV_FILE" \
     --interactive --tty --rm \
     --volume "$IN_DIR":/images \
@@ -30,8 +30,8 @@ The following environment variables are supported for configuration (and their d
 | ---------|---------|------------ |
 | INPUT_DIR | "/images/" | A mounted point containing images to process - must match the Docker command above |
 | MD_FILE | "md_out.json" | MegaDetector output file, must be located in INPUT_DIR |
-| EN_FILE | "en_out.pkl" | PKL file from en-predict Efficient Net output. Must be located in INPUT_DIR |
-| EN_CSV | "en_out.csv" | CSV file from en-predict Efficient Net output. Must be located in INPUT_DIR  |
+| EN_FILE | "mewc_out.pkl" | PKL file from en-predict Efficient Net output. Must be located in INPUT_DIR |
+| EN_CSV | "mewc_out.csv" | CSV file from en-predict Efficient Net output. Must be located in INPUT_DIR  |
 | LOWER_CONF | 0.05 | The lowest detection confidence threshold to accept |
 | OVERLAP | 0.3 | Matryoshka reduction - minimum proportional shared area for two boxes to be considered overlapping  |
 | EDGE_DIST | 0.02 | Matryoshka reduction - minimum proportional edge distance for two boxes to share a 'close' edge |
