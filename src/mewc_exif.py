@@ -44,7 +44,7 @@ try:
     en_out = pd.read_pickle(en_path)
 except Exception as e:
     print(e)
-    exit("ERROR: Unable to read en_out file.")
+    exit("ERROR: Unable to read mewc_out file.")
 
 try:
     json_path = Path(config['INPUT_DIR'],config['MD_FILE'])
