@@ -3,6 +3,7 @@ import logging
 import json
 import pandas as pd
 import piexif
+import re
 from datetime import datetime
 from tqdm import tqdm
 from pathlib import Path
@@ -124,9 +125,10 @@ for json_image in tqdm(json_data['images']):
                     print(key, value)
             # set the f_number 33437
             exif_dict["Exif"][33437] = (int(detections), 1)
-            group_1 = en_out.loc[(en_out['filename'].str.contains(str(image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 1.0)]
+            safe_image_stem = re.escape(image_stem)
+            group_1 = en_out.loc[(en_out['filename'].str.contains(str(safe_image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 1.0)]
             group_1 = group_1.reset_index()
-            group_2 = en_out.loc[(en_out['filename'].str.contains(str(image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 2.0)]
+            group_2 = en_out.loc[(en_out['filename'].str.contains(str(safe_image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 2.0)]
             group_2 = group_2.reset_index()
             if(int(config['DEBUG']) > 0):
                 print("group_1")
