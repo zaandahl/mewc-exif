@@ -57,12 +57,13 @@ except Exception as e:
 
 print("Writing MD conf and orig date time exif data from " + str(len(json_data['images'])) + " images in " + config['MD_FILE'] + " to " + config['EN_CSV'])
 en_out['date_time_orig'] = None
+en_out['flash_fired'] = None  # Add a new column for flash status
+
 for json_image in tqdm(json_data['images']):
-    if(contains_animal(json_image)):
+    if contains_animal(json_image):
         image_name = Path(json_image.get('file')).name
         image_stem = Path(json_image.get('file')).stem
         image_ext = Path(json_image.get('file')).suffix
-        #input_path = Path(config['INPUT_DIR'],image_name)
         try:
             input_path = next(Path(config['INPUT_DIR']).rglob(image_name))
             img = Image.open(input_path)
@@ -70,24 +71,42 @@ for json_image in tqdm(json_data['images']):
                 exif_dict = piexif.load(img.info["exif"])
             except:
                 exif_dict = {'Exif': {}}
+
+            # Extract original date-time from EXIF or file's modified time
             try:
-                en_out.loc[en_out['filename'].str.startswith(str(image_stem)) , 'date_time_orig'] = str(exif_dict["Exif"][36867].decode('UTF-8'))
+                en_out.loc[en_out['filename'].str.startswith(str(image_stem)), 'date_time_orig'] = str(
+                    exif_dict["Exif"][36867].decode('UTF-8')
+                )
             except:
                 modified_time = os.path.getmtime(input_path)
                 date_time_str = datetime.fromtimestamp(modified_time).strftime('%Y:%m:%d %H:%M:%S')
                 en_out.loc[en_out['filename'].str.startswith(str(image_stem)), 'date_time_orig'] = date_time_str
+
+            # Extract flash status from EXIF and set `flash_fired`
+            flash_fired_value = 0  # Default to no flash
+            if 37385 in exif_dict["Exif"]:
+                flash_status = exif_dict["Exif"][37385]
+                flash_fired_value = 1 if flash_status != 0 else 0
+            en_out.loc[en_out['filename'].str.startswith(str(image_stem)), 'flash_fired'] = flash_fired_value
+
+            # Update detection confidence values
             for idx in range(len(json_image['detections'])):
-                en_out.loc[en_out['filename'].str.startswith(str(image_stem) + '-' + str(idx)), 'conf'] = json_image['detections'][idx]['conf']
+                en_out.loc[
+                    en_out['filename'].str.startswith(str(image_stem) + '-' + str(idx)), 'conf'
+                ] = json_image['detections'][idx]['conf']
+
         except Exception as e:
             print(e)
             print("ERROR: failed to process " + image_name)
 
+# Save the updated DataFrame
 try:
-    en_out.to_pickle(Path(config["INPUT_DIR"],config["EN_FILE"]))
-    en_out.to_csv(Path(config["INPUT_DIR"],config["EN_CSV"]))
+    en_out.to_pickle(Path(config["INPUT_DIR"], config["EN_FILE"]))
+    en_out.to_csv(Path(config["INPUT_DIR"], config["EN_CSV"]))
 except Exception as e:
     print(e)
     exit("ERROR: trouble writing output files")
+
 # en_out = en_out.loc[((en_out.class_rank == 1.0) | (en_out.class_rank == 2.0)) & (en_out.filename.str.contains("-0\."))]
 # en_out['filename'] = en_out['filename'].replace("-0\.", ".", regex = True)
 # en_out = en_out.drop('label', axis = 1)
