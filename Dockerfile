@@ -1,5 +1,5 @@
 # set base image (host OS)
-FROM zaandahl/mewc-detect:latest
+FROM zaandahl/mewc-detect:5.0.13
 
 # Install the iptcinfo3 library
 RUN pip install iptcinfo3
