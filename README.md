@@ -2,7 +2,7 @@
 
 # mewc-exif
 
-The integrity changes in this checkout require the source builds described in [BUILDING.md](BUILDING.md). Existing DockerHub examples do not provide these fixes until a maintainer publishes a compatible release. Use the tested image ID or digest from the generated image lock.
+The integrity changes in this checkout require the source builds described in [BUILDING.md](BUILDING.md). Published legacy tags do not provide these fixes. Use the tested image ID or digest from the generated image lock.
 
 ## Introduction
 This repository contains code to build a Docker container for running mewc-exif. This tool extracts canonical metadata and creates separate Camelot export copies from classifier and MegaDetector results. Source images and input prediction files remain unchanged. This can be useful when importing camera trap images into organisational tools like [Camelot](https://camelotproject.org). Because EXIF data is specific to camera brands and the specific EXIF tags do not support every data type this is an experimental image and should be treated as such. Eligible animal JPEGs receive the Camelot metadata mapping in the export tree. Other images are copied unchanged so the export tree remains complete. An unsupported format for an eligible animal, ambiguous classification, or failed image makes the stage exit nonzero; canonical metadata remains available for review.
@@ -17,11 +17,12 @@ VARIABLE=VALUE
 After installing Docker you can run the container using a command similar to the following. Substitute `"$IN_DIR"` for your image directory and create a text file `"$ENV_FILE"` with any config options you wish to override. 
 
 ```
-docker pull zaandahl/mewc-exif
+# Set STAGE_IMAGE to this stage's immutable image ID or registry digest from the generated image lock.
+: "${STAGE_IMAGE:?Set the reviewed stage image}"
 docker run --env-file "$ENV_FILE" \
     --interactive --tty --rm \
     --volume "$IN_DIR":/images \
-    zaandahl/mewc-exif
+    "$STAGE_IMAGE"
 ```
 
 ## Config Options

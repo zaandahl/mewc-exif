@@ -20,7 +20,7 @@ DEFAULTS = dict(INPUT_DIR="/images", MD_FILE="md_out.json", EN_FILE="mewc_out.pk
 
 def relative_file(value):
     if not isinstance(value, str) or "\\" in value:
-        raise ValueError("source_file must be a POSIX relative path")
+        raise ValueError("value must be a POSIX relative path")
     path = PurePosixPath(value)
     if path.is_absolute() or not path.parts or any(p in ("..", ".", "") for p in value.split("/")):
         raise ValueError(f"unsafe relative path: {value!r}")
@@ -201,7 +201,6 @@ def run(config, process=None):
                 for key, value in {**camera, "detections": sum(valid)}.items():
                     frame.loc[rows, key] = value
                 frame.loc[rows, "eligible"] = frame.loc[rows, "detection_index"].map(lambda index: valid[index])
-                entry["classifications"] = json.loads(frame.loc[rows].to_json(orient="records"))
                 destination = beneath(export, item["file"])
                 if any(keep and str(item["detections"][i]["category"]) == "1" for i, keep in enumerate(valid)):
                     if camera["image_format"] != "JPEG":

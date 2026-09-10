@@ -66,7 +66,8 @@ def test_lossless_source_and_camelot_mapping(tmp_path):
     assert piexif.load(str(source)) == original_exif
     assert (tmp_path / "mewc_out.pkl").read_bytes() == input_pickle
     assert app13 in exported.read_bytes()
-    assert Image.open(source).tobytes() == Image.open(exported).tobytes()
+    with Image.open(source) as source_image, Image.open(exported) as exported_image:
+        assert source_image.tobytes() == exported_image.tobytes()
     assert source.read_bytes()[source.read_bytes().index(b"\xff\xda"):] == exported.read_bytes()[exported.read_bytes().index(b"\xff\xda"):]
     tags = piexif.load(str(exported))["Exif"]
     assert tags[piexif.ExifIFD.FNumber] == (1, 1)
