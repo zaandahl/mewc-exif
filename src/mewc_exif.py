@@ -134,9 +134,11 @@ def camelot_metadata(exif, rows, count):
         if len(distinct) != 1:
             raise ValueError(f"Camelot rank {rank} cannot represent tied highest-confidence classifications")
         winner = distinct.iloc[0]
-        class_id = int(winner["class_id"])
+        raw_id = winner["class_id"]
+        class_id = int(raw_id)
         prob = float(winner["prob"]) if rank == 1 else 0
-        if class_id != winner["class_id"] or not 0 <= class_id <= 65535 or not 0 <= prob <= 1:
+        canonical_id = (str(class_id) == raw_id) if isinstance(raw_id, str) else (not isinstance(raw_id, bool) and class_id == raw_id)
+        if not canonical_id or not 0 <= class_id <= 65535 or not 0 <= prob <= 1:
             raise ValueError("classification outside Camelot tag range")
         tags[tag] = class_id if rank == 1 else (class_id, 1)
         if rank == 1:

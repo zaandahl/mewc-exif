@@ -298,3 +298,9 @@ def test_output_directory_blocked_by_file_fails_before_writes(tmp_path, monkeypa
     with pytest.raises(ValueError, match="output directory conflicts"):
         metadata.run({"INPUT_DIR": str(tmp_path), key: value}, process)
     assert blocker.read_bytes() == b"existing sentinel"
+
+
+def test_original_decimal_string_class_code_exports_without_axis_recoding():
+    frame = pd.DataFrame([dict(class_rank=1, class_id='999', prob=.83, conf=.9)])
+    result = metadata.camelot_metadata({'Exif': {}}, frame, 1)
+    assert result['Exif'][piexif.ExifIFD.ISOSpeedRatings] == 999
