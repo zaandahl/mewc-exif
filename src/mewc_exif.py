@@ -245,10 +245,14 @@ def run(config, process=None):
 
 
 def main():
-    from lib_common import read_yaml
-    config = {**DEFAULTS, **read_yaml("config.yaml")}
-    config.update({key: os.environ[key] for key in config if key in os.environ})
     try:
+        import yaml
+        with open("config.yaml", encoding="utf-8") as stream:
+            loaded = yaml.safe_load(stream)
+        if not isinstance(loaded, dict):
+            raise ValueError("config.yaml must contain a mapping")
+        config = {**DEFAULTS, **loaded}
+        config.update({key: os.environ[key] for key in config if key in os.environ})
         report = run(config)
         print(json.dumps(dict(complete=report["complete"], counts=report.get("counts", {}),
                               errors=report["errors"], image_errors=[
