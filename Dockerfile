@@ -1,14 +1,8 @@
-# set base image (host OS)
-FROM zaandahl/mewc-detect:5.0.13
-
-# Install the iptcinfo3 library
-RUN pip install iptcinfo3
-
-# set the working directory in the container
+# Required: use the fixed parent built from the matching source lock.
+ARG MEWC_DETECT_BASE
+FROM ${MEWC_DETECT_BASE}
 WORKDIR /code
-
-# copy code
+COPY requirements-runtime.txt .
+RUN python -m pip install --no-cache-dir --no-deps --require-hashes -r requirements-runtime.txt
 COPY src/ .
-
-# run metadata_writer on start
-CMD [ "python", "./mewc_exif.py" ]
+CMD ["python", "./mewc_exif.py"]

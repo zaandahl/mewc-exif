@@ -1,0 +1,6 @@
+pytest==9.1.1
+PyYAML==6.0.3
+Pillow==12.3.0
+numpy==1.26.4
+pandas==2.2.2
+piexif==1.1.3
