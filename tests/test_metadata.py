@@ -307,19 +307,26 @@ def test_original_decimal_string_class_code_exports_without_axis_recoding():
     assert result['Exif'][piexif.ExifIFD.ISOSpeedRatings] == 999
 
 
-def test_main_reads_yaml_and_exports_without_flow_lib_common(tmp_path, monkeypatch, capsys):
+def test_shipped_config_matches_stage_defaults():
+    import yaml
+    shipped = yaml.safe_load(Path(metadata.__file__).with_name("config.yaml").read_text())
+    assert shipped == metadata.DEFAULTS
+    assert all(value is not None for value in shipped.values())
+
+
+def test_main_shipped_config_exports_without_flow_lib_common(tmp_path, monkeypatch, capsys):
     from types import SimpleNamespace
     jpeg(tmp_path / "site/a.jpg")
     original = (tmp_path / "site/a.jpg").read_bytes()
     inputs(tmp_path, [{"file": "site/a.jpg", "detections": [detection()]}], [row()])
-    (tmp_path / "config.yaml").write_text("EXIF_DIR: adapter-output\n")
+    (tmp_path / "config.yaml").write_text(Path(metadata.__file__).with_name("config.yaml").read_text())
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("INPUT_DIR", str(tmp_path))
     monkeypatch.setitem(sys.modules, "lib_common", None)
     monkeypatch.setitem(sys.modules, "lib_tools", SimpleNamespace(process_detections=process))
     assert metadata.main() == 0
     assert json.loads(capsys.readouterr().out)["complete"] is True
-    assert (tmp_path / "adapter-output/site/a.jpg").is_file()
+    assert (tmp_path / "camelot/site/a.jpg").is_file()
     assert (tmp_path / "site/a.jpg").read_bytes() == original
     assert json.loads((tmp_path / "metadata/metadata.json").read_text())["complete"] is True
 
