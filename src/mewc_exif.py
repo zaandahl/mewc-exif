@@ -1,193 +1,267 @@
-import os
-import logging
+"""Immutable source metadata extraction and a separate Camelot JPEG adapter."""
+import copy
+from datetime import datetime, timezone
+import hashlib
 import json
+import os
+from pathlib import Path, PurePosixPath
+import shutil
+import tempfile
+
 import pandas as pd
 import piexif
-import re
-from datetime import datetime
-from tqdm import tqdm
-from pathlib import Path
-from lib_common import read_yaml
-from lib_tools import process_detections,contains_animal
 from PIL import Image
-from iptcinfo3 import IPTCInfo
 
-logging.getLogger('iptcinfo').setLevel(logging.ERROR)
+DEFAULTS = dict(INPUT_DIR="/images", MD_FILE="md_out.json", EN_FILE="mewc_out.pkl",
+                EN_CSV="mewc_out.csv", EXIF_DIR="camelot", METADATA_DIR="metadata",
+                OVERLAP=0.3, EDGE_DIST=0.02, MIN_EDGES=0, UPPER_CONF=0.9,
+                LOWER_CONF=0.05, SUPPRESSION_POLICY="category-confidence-v1")
 
-def get_keywords(file_path):
+
+def relative_file(value):
+    if not isinstance(value, str) or "\\" in value:
+        raise ValueError("value must be a POSIX relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or any(p in ("..", ".", "") for p in value.split("/")):
+        raise ValueError(f"unsafe relative path: {value!r}")
+    return path.as_posix()
+
+
+def beneath(root, relative):
+    path = (root / relative_file(relative)).resolve()
+    if not path.is_relative_to(root.resolve()):
+        raise ValueError(f"path escapes its root: {relative}")
+    return path
+
+
+def atomic_write(path, writer):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".mewc-", suffix=path.suffix, dir=path.parent)
+    os.close(fd)
     try:
-        info = IPTCInfo(file_path)
-    except Exception as e:
-        print("exception: " + str(e))
-        info = None
-    # for k, v in info._data.items():
-    #     if k == 25: print(k, v)
-    return info
+        writer(Path(name))
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
-def print_exif(exif_dict):
-    if 33437 in exif_dict["Exif"]:
-        print(f'photo-fnumber-setting (detections): {exif_dict["Exif"][33437]}')
-    if 34855 in exif_dict["Exif"]:
-        print(f'photo-iso-setting (1st class): {exif_dict["Exif"][34855]}')
-    if 33434 in exif_dict["Exif"]:
-        print(f'photo-exposure-value (1st prob): {exif_dict["Exif"][33434]}')
-    if 37386 in exif_dict["Exif"]:
-        print(f'photo-focal-length (2nd class): {exif_dict["Exif"][37386]}')
 
-config = read_yaml('config.yaml')
-config['DEBUG'] = 0
-for conf_key in config.keys():
-    if conf_key in os.environ:
-        config[conf_key] = os.environ[conf_key]
+def write_json(path, value):
+    atomic_write(path, lambda temp: temp.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n"))
 
-try:
-    en_path = Path(config['INPUT_DIR'],config['EN_FILE'])
-    en_out = pd.read_pickle(en_path)
-except Exception as e:
-    print(e)
-    exit("ERROR: Unable to read mewc_out file.")
 
-try:
-    json_path = Path(config['INPUT_DIR'],config['MD_FILE'])
-    with open(json_path, "r") as read_json:
-        json_data = json.load(read_json)
-except Exception as e:
-    print(e)
-    exit("ERROR: Unable to read MegaDetector json file")
+def bind_predictions(frame, images):
+    """Prefer canonical keys; migrate legacy crop names only with a unique exact match."""
+    lookup, sources = {}, {}
+    for image in images:
+        source = relative_file(image["file"])
+        if source in sources:
+            raise ValueError(f"duplicate detector source: {source}")
+        sources[source] = image
+        for index, _ in enumerate(image.get("detections") or []):
+            path = PurePosixPath(source)
+            crop = str(path.with_name(f"{path.stem}-{index}{path.suffix}"))
+            for name in {crop, PurePosixPath(crop).name}:
+                lookup.setdefault(name, set()).add((source, index))
+    result = frame.copy().reset_index(drop=True)
+    explicit = {"source_file", "detection_index"}.issubset(result.columns)
+    if not explicit and ({"source_file", "detection_index"} & set(result.columns)):
+        raise ValueError("prediction identity requires both source_file and detection_index")
+    keys = []
+    for row_id, row in result.iterrows():
+        if explicit:
+            source = relative_file(row["source_file"])
+            index = row["detection_index"]
+            if isinstance(index, bool) or pd.isna(index) or int(index) != index:
+                raise ValueError(f"invalid detection_index at prediction row {row_id}")
+            key = source, int(index)
+        else:
+            name = relative_file(row["filename"])
+            candidates = lookup.get(name, set())
+            if len(candidates) != 1:
+                raise ValueError(f"ambiguous or unmatched legacy crop at row {row_id}: {name}")
+            key = next(iter(candidates))
+        source, index = key
+        detections = sources.get(source, {}).get("detections") or []
+        if index < 0 or index >= len(detections):
+            raise ValueError(f"unknown source/detection identity at row {row_id}: {key}")
+        if str(detections[index]["category"]) != "1":
+            raise ValueError(f"classifier row refers to non-animal detection: {key}")
+        keys.append(key)
+    result["source_file"] = [key[0] for key in keys]
+    result["detection_index"] = [key[1] for key in keys]
+    result["conf"] = [sources[source]["detections"][index]["conf"] for source, index in keys]
+    return result
 
-print("Writing MD conf and orig date time exif data from " + str(len(json_data['images'])) + " images in " + config['MD_FILE'] + " to " + config['EN_CSV'])
-en_out['date_time_orig'] = None
-en_out['flash_fired'] = None  # Add a new column for flash status
 
-for json_image in tqdm(json_data['images']):
-    if contains_animal(json_image):
-        image_name = Path(json_image.get('file')).name
-        image_stem = Path(json_image.get('file')).stem
-        image_ext = Path(json_image.get('file')).suffix
-        try:
-            input_path = next(Path(config['INPUT_DIR']).rglob(image_name))
-            img = Image.open(input_path)
+def text_tag(value):
+    return value.decode("utf-8").rstrip("\x00") if isinstance(value, bytes) else str(value)
+
+
+def read_camera_metadata(source):
+    with Image.open(source) as image:
+        image_format = image.format
+        exif = piexif.load(image.info["exif"]) if image.info.get("exif") else {"0th": {}, "Exif": {}, "GPS": {}, "Interop": {}, "1st": {}, "thumbnail": None}
+    tags = exif["Exif"]
+    if piexif.ExifIFD.DateTimeOriginal in tags:
+        timestamp = text_tag(tags[piexif.ExifIFD.DateTimeOriginal])
+        offset = tags.get(36881)  # OffsetTimeOriginal; absent in many camera JPEGs.
+        provenance, zone = "exif_datetime_original", text_tag(offset) if offset else "unknown"
+    else:
+        timestamp = datetime.fromtimestamp(source.stat().st_mtime, timezone.utc).isoformat()
+        provenance, zone = "filesystem_mtime", "UTC"
+    flash = tags.get(piexif.ExifIFD.Flash)
+    return exif, dict(image_format=image_format, date_time_orig=timestamp, timestamp_source=provenance,
+                      timestamp_timezone=zone, flash_fired=None if flash is None else int(bool(int(flash) & 1)))
+
+
+def camelot_metadata(exif, rows, count):
+    """Preserve the established camera-tag mapping, refusing unrepresentable ties."""
+    result = copy.deepcopy(exif)
+    tags = result.setdefault("Exif", {})
+    if isinstance(tags.get(41988), int):
+        tags[41988] = (tags[41988], 1)  # Existing Bushnell repair, export only.
+    tags[piexif.ExifIFD.FNumber] = (int(count), 1)
+    for rank, tag in ((1, piexif.ExifIFD.ISOSpeedRatings), (2, piexif.ExifIFD.FocalLength)):
+        group = rows.loc[rows["class_rank"] == rank] if len(rows) else rows
+        if group.empty:
+            tags.pop(tag, None)
+            if rank == 1:
+                tags.pop(piexif.ExifIFD.ExposureTime, None)
+            continue
+        best = group.loc[group["conf"] == group["conf"].max()]
+        columns = ["class_id", "prob"] if rank == 1 else ["class_id"]
+        distinct = best[columns].drop_duplicates()
+        if len(distinct) != 1:
+            raise ValueError(f"Camelot rank {rank} cannot represent tied highest-confidence classifications")
+        winner = distinct.iloc[0]
+        raw_id = winner["class_id"]
+        class_id = int(raw_id)
+        prob = float(winner["prob"]) if rank == 1 else 0
+        canonical_id = (str(class_id) == raw_id) if isinstance(raw_id, str) else (not isinstance(raw_id, bool) and class_id == raw_id)
+        if not canonical_id or not 0 <= class_id <= 65535 or not 0 <= prob <= 1:
+            raise ValueError("classification outside Camelot tag range")
+        tags[tag] = class_id if rank == 1 else (class_id, 1)
+        if rank == 1:
+            tags[piexif.ExifIFD.ExposureTime] = (min(int(round(prob * 100)), 99), 1)
+    return result
+
+
+def run(config, process=None):
+    if process is None:
+        from lib_tools import process_detections
+        process = process_detections
+    config = {**DEFAULTS, **config}
+    root = Path(config["INPUT_DIR"]).resolve()
+    export, metadata = beneath(root, config["EXIF_DIR"]), beneath(root, config["METADATA_DIR"])
+    if root in (export, metadata):
+        raise ValueError("output directory must differ from INPUT_DIR")
+    if export == metadata or export.is_relative_to(metadata) or metadata.is_relative_to(export):
+        raise ValueError("EXIF_DIR and METADATA_DIR must be separate directories")
+    for directory in (export, metadata):
+        if directory.is_file() or any(parent.is_file() for parent in directory.parents):
+            raise ValueError("output directory conflicts with an existing file")
+    outputs = {"EN_FILE": beneath(metadata, config["EN_FILE"]),
+               "EN_CSV": beneath(metadata, config["EN_CSV"]),
+               "metadata.json": beneath(metadata, "metadata.json")}
+    for index, (name, path) in enumerate(outputs.items()):
+        for other_name, other_path in list(outputs.items())[index + 1:]:
+            if path.is_relative_to(other_path) or other_path.is_relative_to(path):
+                raise ValueError(f"metadata output paths overlap: {name} and {other_name}")
+        if path.is_dir() or any(parent.is_file() for parent in path.parents):
+            raise ValueError(f"metadata output path conflicts with an existing file/directory: {name}")
+    for key in ("MD_FILE", "EN_FILE"):
+        source_artifact = beneath(root, config[key])
+        if source_artifact.is_relative_to(export) or source_artifact.is_relative_to(metadata):
+            raise ValueError("input artifact lies in an output directory")
+    report = dict(schema_version=1, stage="exif", complete=False,
+                  suppression_policy=config["SUPPRESSION_POLICY"], images=[], errors=[])
+    report_path = outputs["metadata.json"]
+    data = json.loads(beneath(root, config["MD_FILE"]).read_text())
+    for item in data["images"]:
+        source = beneath(root, item["file"])
+        if source.is_relative_to(export) or source.is_relative_to(metadata):
+            raise ValueError("source image lies in an output directory")
+    try:
+        frame = bind_predictions(pd.read_pickle(beneath(root, config["EN_FILE"])), data["images"])
+        for key in ("image_format", "date_time_orig", "timestamp_source", "timestamp_timezone", "flash_fired", "detections", "eligible", "metadata_status"):
+            frame[key] = pd.Series([None] * len(frame), dtype=object)
+        for item in data["images"]:
+            entry = dict(source_file=item.get("file"), status="error")
+            report["images"].append(entry)
             try:
-                exif_dict = piexif.load(img.info["exif"])
-            except:
-                exif_dict = {'Exif': {}}
+                source = beneath(root, item["file"])
+                if source.is_relative_to(export) or source.is_relative_to(metadata):
+                    raise ValueError("source image lies in an output directory")
+                valid = process(item, config["OVERLAP"], config["EDGE_DIST"], config["MIN_EDGES"], config["UPPER_CONF"], config["LOWER_CONF"], policy=config["SUPPRESSION_POLICY"])
+                exif, camera = read_camera_metadata(source)
+                entry.update(camera)
+                entry["source_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+                entry["eligible_detection_indices"] = [i for i, keep in enumerate(valid) if keep]
+                rows = frame["source_file"] == item["file"]
+                for key, value in {**camera, "detections": sum(valid)}.items():
+                    frame.loc[rows, key] = value
+                frame.loc[rows, "eligible"] = frame.loc[rows, "detection_index"].map(lambda index: valid[index])
+                destination = beneath(export, item["file"])
+                if any(keep and str(item["detections"][i]["category"]) == "1" for i, keep in enumerate(valid)):
+                    if camera["image_format"] != "JPEG":
+                        raise ValueError("Camelot export requires JPEG; canonical metadata retained")
+                    eligible_rows = frame.loc[rows & (frame["eligible"] == True)]
+                    expected = {i for i, keep in enumerate(valid) if keep and str(item["detections"][i]["category"]) == "1"}
+                    available = set(eligible_rows.loc[eligible_rows["class_rank"] == 1, "detection_index"]) if len(eligible_rows) else set()
+                    if expected != available:
+                        raise ValueError(f"missing rank-1 predictions for eligible animal indices: {sorted(expected - available)}")
+                    adapted = piexif.dump(camelot_metadata(exif, eligible_rows, sum(valid)))
+                    # Insert an EXIF segment into a copy; never decode/re-encode JPEG pixels.
+                    def export_jpeg(temp):
+                        piexif.insert(adapted, str(source), str(temp))
+                        shutil.copystat(source, temp)
+                    atomic_write(destination, export_jpeg)
+                    entry["export_file"], entry["status"] = str(destination.relative_to(root)), "exported"
+                else:
+                    atomic_write(destination, lambda temp: shutil.copy2(source, temp))
+                    entry["export_file"] = str(destination.relative_to(root))
+                    entry["status"] = "no_animal"
+                entry["export_sha256"] = hashlib.sha256(destination.read_bytes()).hexdigest()
+                frame.loc[rows, "metadata_status"] = entry["status"]
+            except Exception as error:
+                entry["status"] = "error"
+                entry["error"] = str(error)
+                frame.loc[frame["source_file"] == item.get("file"), "metadata_status"] = "error"
+            entry["classifications"] = json.loads(frame.loc[frame["source_file"] == item.get("file")].to_json(orient="records"))
+        report["counts"] = {status: sum(e["status"] == status for e in report["images"]) for status in ("exported", "no_animal", "error")}
+        atomic_write(outputs["EN_FILE"], frame.to_pickle)
+        atomic_write(outputs["EN_CSV"], lambda temp: frame.to_csv(temp, index=False))
+        report["complete"] = report["counts"]["error"] == 0
+    except Exception as error:
+        report["errors"].append(str(error))
+        if not report["images"]:
+            report["images"] = [dict(source_file=item.get("file"), status="not_processed",
+                                     error="stage preflight failed; see errors") for item in data["images"]]
+    report["counts"] = {status: sum(e["status"] == status for e in report["images"])
+                        for status in ("exported", "no_animal", "error", "not_processed")}
+    write_json(report_path, report)
+    return report
 
-            # Extract original date-time from EXIF or file's modified time
-            try:
-                en_out.loc[en_out['filename'].str.startswith(str(image_stem)), 'date_time_orig'] = str(
-                    exif_dict["Exif"][36867].decode('UTF-8')
-                )
-            except:
-                modified_time = os.path.getmtime(input_path)
-                date_time_str = datetime.fromtimestamp(modified_time).strftime('%Y:%m:%d %H:%M:%S')
-                en_out.loc[en_out['filename'].str.startswith(str(image_stem)), 'date_time_orig'] = date_time_str
 
-            # Extract flash status from EXIF and set `flash_fired`
-            flash_fired_value = 0  # Default to no flash
-            if 37385 in exif_dict["Exif"]:
-                flash_status = exif_dict["Exif"][37385]
-                flash_fired_value = 1 if flash_status != 0 else 0
-            en_out.loc[en_out['filename'].str.startswith(str(image_stem)), 'flash_fired'] = flash_fired_value
+def main():
+    try:
+        import yaml
+        with open("config.yaml", encoding="utf-8") as stream:
+            loaded = yaml.safe_load(stream)
+        if not isinstance(loaded, dict):
+            raise ValueError("config.yaml must contain a mapping")
+        config = {**DEFAULTS, **loaded}
+        config.update({key: os.environ[key] for key in config if key in os.environ})
+        report = run(config)
+        print(json.dumps(dict(complete=report["complete"], counts=report.get("counts", {}),
+                              errors=report["errors"], image_errors=[
+                                  {"source_file": item["source_file"], "error": item["error"]}
+                                  for item in report.get("images", []) if "error" in item])))
+        return 0 if report["complete"] else 1
+    except Exception as error:
+        print(f"EXIF stage failed: {error}")
+        return 1
 
-            # Update detection confidence values
-            for idx in range(len(json_image['detections'])):
-                en_out.loc[
-                    en_out['filename'].str.startswith(str(image_stem) + '-' + str(idx)), 'conf'
-                ] = json_image['detections'][idx]['conf']
 
-        except Exception as e:
-            print(e)
-            print("ERROR: failed to process " + image_name)
-
-# Save the updated DataFrame
-try:
-    en_out.to_pickle(Path(config["INPUT_DIR"], config["EN_FILE"]))
-    en_out.to_csv(Path(config["INPUT_DIR"], config["EN_CSV"]))
-except Exception as e:
-    print(e)
-    exit("ERROR: trouble writing output files")
-
-# en_out = en_out.loc[((en_out.class_rank == 1.0) | (en_out.class_rank == 2.0)) & (en_out.filename.str.contains("-0\."))]
-# en_out['filename'] = en_out['filename'].replace("-0\.", ".", regex = True)
-# en_out = en_out.drop('label', axis = 1)
-
-print("Writing metadata to " + str(len(json_data['images'])) + " images from " + config['MD_FILE'])
-for json_image in tqdm(json_data['images']):
-    if(contains_animal(json_image)):
-        valid_image = process_detections(json_image,config['OVERLAP'],config['EDGE_DIST'],config['MIN_EDGES'],config['UPPER_CONF'],config['LOWER_CONF'])
-        image_name = Path(json_image.get('file')).name
-        image_stem = Path(json_image.get('file')).stem
-        image_ext = Path(json_image.get('file')).suffix
-        #input_path = Path(config['INPUT_DIR'],image_name)
-        try:
-            input_path = next(Path(config['INPUT_DIR']).rglob(image_name))
-            detections = sum(valid_image)
-            en_out.loc[en_out.filename == image_name, 'detections'] = detections # just housekeeping with the df
-            img = Image.open(input_path)
-            try:
-                exif_dict = piexif.load(img.info["exif"])
-            except:
-                exif_dict = {'Exif': {}}
-            try:
-                iptc_keywords = get_keywords(input_path)
-                # print("iptc keywords:" + iptc_keywords)
-            except:
-                iptc_keywords = None
-            if(41988 in exif_dict["Exif"] and type(exif_dict["Exif"][41988]) is int):
-                exif_dict["Exif"][41988] = (exif_dict["Exif"][41988], 1) # hack to fix Bushnell data - this value needs to be a tuple
-            if(int(config['DEBUG']) > 0):
-                print(image_name)
-                print("before")
-                print_exif(exif_dict)
-            if(int(config['DEBUG']) > 1):
-                for key, value in exif_dict["Exif"].items():
-                    print(key, value)
-            # set the f_number 33437
-            exif_dict["Exif"][33437] = (int(detections), 1)
-            safe_image_stem = re.escape(image_stem)
-            group_1 = en_out.loc[(en_out['filename'].str.contains(str(safe_image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 1.0)]
-            group_1 = group_1.reset_index()
-            group_2 = en_out.loc[(en_out['filename'].str.contains(str(safe_image_stem) + '-[0-9]+\.jpg', case=False)) & (en_out.class_rank == 2.0)]
-            group_2 = group_2.reset_index()
-            if(int(config['DEBUG']) > 0):
-                print("group_1")
-                print(group_1)
-                print("group_2")
-                print(group_2)
-            if(len(group_1) > 0):
-                class_1 = group_1.loc[group_1['conf'].idxmax(), 'class_id']
-                prob_1 = group_1.loc[group_1['conf'].idxmax(), 'prob']
-            #class_1 = en_out.loc[(en_out['filename'].str.contains(str(image_stem))) & (en_out.class_rank == 1.0), 'class_id']
-            #prob_1 = en_out.loc[(en_out['filename'].str.contains(str(image_stem))) & (en_out.class_rank == 1.0), 'prob']
-            #class_2 = en_out.loc[(en_out['filename'].str.contains(str(image_stem))) & (en_out.class_rank == 2.0), 'class_id']
-            #if(len(class_1) > 0): 
-                # set iso 34855
-                #exif_dict["Exif"][34855] = int(class_1.values[0])
-                exif_dict["Exif"][34855] = int(class_1)
-                # set exposure time 33434
-                #exif_dict["Exif"][33434] = (int(round(prob_1.values[0]*8640,0)), 8640)
-                #exif_dict["Exif"][33434] = (min(int(round(prob_1.values[0]*100,0)),99),1)
-                exif_dict["Exif"][33434] = (min(int(round(prob_1*100,0)),99),1)
-            else: # clean up if there are no efficientnet values to store
-                exif_dict["Exif"].pop(34855, None)
-                exif_dict["Exif"].pop(33434, None)
-            if(len(group_2) > 0):
-                class_2 = group_2.loc[group_2['conf'].idxmax(), 'class_id']
-                # set focal length 37386
-                #exif_dict["Exif"][37386] = (int(class_2.values[0]), 1)
-                exif_dict["Exif"][37386] = (int(class_2), 1)
-            else: # clean up if there are no efficientnet values to store
-                exif_dict["Exif"].pop(37386, None)
-            if(int(config['DEBUG']) > 0):
-                print("After")
-                print_exif(exif_dict)
-            exif_bytes = piexif.dump(exif_dict)
-            img.save(input_path, exif=exif_bytes)
-            if iptc_keywords is not None:
-                iptc_keywords.save_as(str(input_path))
-                # remove temp file with ~ at end
-                if(Path(str(input_path) + "~").is_file()):
-                    Path(str(input_path) + "~").unlink()
-        except Exception as e:
-            print(e)
-            print("ERROR: failed to process " + image_name)
+if __name__ == "__main__":
+    raise SystemExit(main())

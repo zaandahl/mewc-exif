@@ -4,3 +4,5 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile
+      args:
+        MEWC_DETECT_BASE: ${MEWC_DETECT_BASE:?Set the fixed parent image from the generated image lock}
