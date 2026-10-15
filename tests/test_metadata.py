@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import importlib.util
 import json
@@ -135,6 +136,100 @@ def test_ties_retained_canonical_and_export_fails(tmp_path):
     assert "tied" in report["images"][0]["error"]
     assert not (tmp_path / "camelot/site/a.jpg").exists()
     assert set(pd.read_csv(tmp_path / "metadata/mewc_out.csv")["metadata_status"]) == {"error"}
+
+
+@pytest.mark.parametrize("probabilities,percent", [((.822, .824), 82), ((.995, 1.0), 99)])
+def test_equivalent_encoded_ties_export_without_changing_predictions(tmp_path, probabilities, percent):
+    source = tmp_path / "site/a.jpg"
+    app13 = jpeg(source)
+    original = source.read_bytes()
+    images = [{"file": "site/a.jpg", "detections": [detection(), detection(), detection(.8)]}]
+    predictions = [row(index=0, prob=probabilities[0]), row(index=1, prob=probabilities[1]),
+                   row(index=2, class_id=8, prob=.99),
+                   row(index=0, rank=2, class_id=11, prob=.15),
+                   row(index=1, rank=2, class_id=11, prob=.2),
+                   row(index=2, rank=2, class_id=12, prob=.9)]
+    inputs(tmp_path, images, predictions)
+    original_pickle = (tmp_path / "mewc_out.pkl").read_bytes()
+    original_frame = pd.read_pickle(tmp_path / "mewc_out.pkl")
+
+    report = metadata.run({"INPUT_DIR": str(tmp_path)}, process)
+
+    assert report["complete"], report
+    exported = tmp_path / "camelot/site/a.jpg"
+    tags = piexif.load(str(exported))["Exif"]
+    assert tags[piexif.ExifIFD.FNumber] == (3, 1)
+    assert tags[piexif.ExifIFD.ISOSpeedRatings] == 7
+    assert tags[piexif.ExifIFD.ExposureTime] == (percent, 1)
+    assert tags[piexif.ExifIFD.FocalLength] == (11, 1)
+    assert source.read_bytes() == original
+    assert (tmp_path / "mewc_out.pkl").read_bytes() == original_pickle
+    assert app13 in exported.read_bytes()
+    assert original[original.index(b"\xff\xda"):] == exported.read_bytes()[exported.read_bytes().index(b"\xff\xda"):]
+    for enriched in (pd.read_pickle(tmp_path / "metadata/mewc_out.pkl"),
+                     pd.read_csv(tmp_path / "metadata/mewc_out.csv")):
+        pd.testing.assert_frame_equal(enriched[original_frame.columns], original_frame, check_exact=True)
+        assert enriched["metadata_status"].tolist() == ["exported"] * len(predictions)
+    assert len(report["images"][0]["classifications"]) == len(predictions)
+
+
+@pytest.mark.parametrize("rank,codes,probabilities", [
+    (1, [7, 7], [.824, .826]),
+    (1, [7, 8], [.822, .824]),
+    (2, [7, 8], [.822, .824]),
+])
+def test_different_encoded_tags_still_fail_in_either_order(rank, codes, probabilities):
+    records = [dict(class_rank=rank, class_id=code, prob=prob, conf=.9)
+               for code, prob in zip(codes, probabilities)]
+    for ordered in (records, records[::-1]):
+        with pytest.raises(ValueError, match=f"Camelot rank {rank}.*tied highest-confidence"):
+            metadata.camelot_metadata({"Exif": {}}, pd.DataFrame(ordered), 2)
+
+
+@pytest.mark.parametrize("rank", [1, 2])
+def test_canonical_class_codes_share_projection_without_mutating_inputs(rank):
+    frame = pd.DataFrame([dict(class_rank=rank, class_id=code, prob=.82, conf=.9)
+                          for code in (7, "7", 7.0)])
+    exif = {"Exif": {41988: 5}, "0th": {piexif.ImageIFD.Make: b"Original camera"}}
+    before_frame, before_exif = frame.copy(deep=True), copy.deepcopy(exif)
+    first = metadata.camelot_metadata(exif, frame, 3)
+    second = metadata.camelot_metadata(exif, frame.iloc[::-1], 3)
+    assert first == second
+    tag = piexif.ExifIFD.ISOSpeedRatings if rank == 1 else piexif.ExifIFD.FocalLength
+    assert first["Exif"][tag] == (7 if rank == 1 else (7, 1))
+    assert first["Exif"][41988] == (5, 1)
+    assert first["0th"] == exif["0th"]
+    assert exif == before_exif
+    pd.testing.assert_frame_equal(frame, before_frame, check_exact=True)
+
+
+@pytest.mark.parametrize("rank", [1, 2])
+@pytest.mark.parametrize("invalid", [True, False, "07", "+7", "7.0", " 7", "7 ",
+                                    -1, 65536, 7.5, float("nan"), float("inf"), None])
+def test_every_selected_class_code_is_validated(rank, invalid):
+    valid = int(invalid) if isinstance(invalid, bool) else 7
+    frame = pd.DataFrame([dict(class_rank=rank, class_id=code, prob=.82, conf=.9)
+                          for code in (valid, invalid)], dtype=object)
+    for ordered in (frame, frame.iloc[::-1]):
+        with pytest.raises(ValueError, match="classification outside Camelot tag range"):
+            metadata.camelot_metadata({"Exif": {}}, ordered, 2)
+
+
+@pytest.mark.parametrize("invalid", [-.001, 1.001, float("nan"), float("inf"), "invalid", None])
+def test_every_selected_probability_is_validated_before_encoding(invalid):
+    frame = pd.DataFrame([dict(class_rank=1, class_id=7, prob=prob, conf=.9)
+                          for prob in (.82, invalid)], dtype=object)
+    for ordered in (frame, frame.iloc[::-1]):
+        with pytest.raises(ValueError, match="classification outside Camelot tag range"):
+            metadata.camelot_metadata({"Exif": {}}, ordered, 2)
+
+
+@pytest.mark.parametrize("probability,percent", [(0, 0), (.005, 0), (.125, 12), (.135, 14),
+                                               (.985, 98), (1, 99)])
+def test_camelot_percentage_rounding_and_cap_are_unchanged(probability, percent):
+    frame = pd.DataFrame([dict(class_rank=1, class_id=7, prob=probability, conf=.9)])
+    result = metadata.camelot_metadata({"Exif": {}}, frame, 1)
+    assert result["Exif"][piexif.ExifIFD.ExposureTime] == (percent, 1)
 
 
 def test_failure_accounting_and_missing_prediction(tmp_path):
